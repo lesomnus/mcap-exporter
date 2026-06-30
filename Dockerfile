@@ -46,8 +46,8 @@ COPY --from=builder /dist/ /
 FROM scratch AS app
 
 ARG TARGETARCH
-COPY "${TARGETARCH}" /go-app
+COPY "${TARGETARCH}" /mcap-exporter
 
 USER 65532:65532
-ENTRYPOINT ["/go-app"]
+ENTRYPOINT ["/mcap-exporter"]
 CMD ["--help"]

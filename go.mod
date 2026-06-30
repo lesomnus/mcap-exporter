@@ -1,4 +1,4 @@
-module github.com/lesomnus/go-app
+module github.com/lesomnus/mcap-exporter
 
 go 1.26.2
 

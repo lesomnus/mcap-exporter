@@ -8,8 +8,8 @@ import (
 )
 
 var DefaultConfigPaths = []string{
-	"go-app.yaml",
-	"go-app.yml",
+	"mcap-exporter.yaml",
+	"mcap-exporter.yml",
 }
 
 type Config struct {
