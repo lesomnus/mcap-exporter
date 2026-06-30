@@ -1,1 +1,10 @@
 /dist
+
+# go.work pins machine-local module checkouts (absolute paths); keep it local.
+/go.work
+/go.work.sum
+
+# Build output and local run artifacts.
+/mcap-exporter
+*.mcap
+/state.json

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/z"
@@ -15,7 +16,7 @@ var DefaultConfigPaths = []string{
 type Config struct {
 	path string
 
-	Greet GreetConfig
+	Mcap McapConfig
 
 	Otel OtelConfig
 }
@@ -40,6 +41,9 @@ func (c *Config) Path() string {
 }
 
 func (c *Config) Evaluate() error {
-	z.FallbackP(&c.Greet.Format, "Hello, %s!")
+	z.FallbackP(&c.Mcap.Bucket, Duration(time.Second))
+	z.FallbackP(&c.Mcap.Grace, Duration(time.Second))
+	z.FallbackP(&c.Mcap.FlushInterval, Duration(time.Second))
+	z.FallbackP(&c.Mcap.PollInterval, Duration(250*time.Millisecond))
 	return nil
 }

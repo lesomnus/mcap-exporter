@@ -1,4 +1,49 @@
-# Greeting configuration (used by the `greet` subcommand).
-greet:
-  # Format string; %s is replaced with the name argument.
-  format: "Hello, %s!"
+# mcap-exporter configuration.
+
+mcap:
+  # Files or directories to watch. A directory is scanned for *.mcap and watched
+  # for new split files. Can be overridden by `watch` command arguments.
+  paths:
+    - /data/bag
+
+  # Id of the exporter under `otel.exporters` to push to. Must be an otlp or
+  # debug exporter (prometheus is pull-only and is rejected).
+  exporter: otlp/local
+
+  # Message-time bucket width; one delta point is emitted per (topic, bucket),
+  # so Hz = count / bucket downstream.
+  bucket: 1s
+
+  # Wall-clock cadence at which sealed buckets are exported.
+  flush_interval: 1s
+
+  # Export only buckets within this window of the recording's latest message
+  # time (anchored once the backlog is read). Unset = whole timeline; "0s" =
+  # only from the current tail onward.
+  # recent: 1h
+
+  # Persist the last-emitted bucket per topic so restarts do not re-emit.
+  state_path: /var/lib/mcap-exporter/state.json
+
+  # Topics whose ROS2 message starts with a std_msgs/Header; their stamp is read
+  # from Header.stamp instead of the MCAP log time.
+  # headers:
+  #   - /imu/data
+
+otel:
+  exporters:
+    otlp/local:
+      endpoint: 127.0.0.1:4317
+      tls:
+        insecure: true
+    # `debug` writes exported metrics to stdout — handy for eyeballing.
+    debug: {}
+    pretty: {}
+
+  providers:
+    # NOTE: do not list the otlp exporter here. mcap-exporter pushes timestamped
+    # points by extracting the exporter directly; wiring it into a provider would
+    # add a periodic reader that re-stamps with collection time.
+    logger:
+      exporters:
+        - pretty

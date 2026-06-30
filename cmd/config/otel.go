@@ -7,6 +7,8 @@ import (
 
 	"github.com/lesomnus/mcap-exporter/cmd/version"
 	"github.com/lesomnus/mkot"
+	_ "github.com/lesomnus/mkot/debug" // register "debug" (stdout) exporter
+	_ "github.com/lesomnus/mkot/otlp"  // register "otlp" exporter
 	"github.com/lesomnus/mkot/pretty"
 	"github.com/lesomnus/otx"
 	"go.opentelemetry.io/otel/attribute"

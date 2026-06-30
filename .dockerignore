@@ -3,6 +3,9 @@
 /.github/
 /dist/
 
+/go.work
+/go.work.sum
+
 /.dockerignore
 /.gitignore
 /docker-bake.hcl
