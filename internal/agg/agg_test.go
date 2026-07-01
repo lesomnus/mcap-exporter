@@ -16,16 +16,29 @@ func msg(topic string, ns int64) tail.Msg {
 	return tail.Msg{Topic: topic, Schema: "S", Time: time.Unix(0, ns)}
 }
 
-// capture is a Sink that records all emitted data points and the last metric.
+// capture is a Sink that records the count metric's data points (and that
+// metric). Other metrics in the batch (bytes, interval) are asserted separately.
 func capture(dst *[]metricdata.DataPoint[int64], last **metricdata.Metrics) Sink {
 	return func(_ context.Context, ms []metricdata.Metrics) error {
 		for i := range ms {
+			if ms[i].Name != MetricName {
+				continue
+			}
 			*last = &ms[i]
 			sum := ms[i].Data.(metricdata.Sum[int64])
 			*dst = append(*dst, sum.DataPoints...)
 		}
 		return nil
 	}
+}
+
+// byName indexes a metric batch by name for multi-metric assertions.
+func byName(ms []metricdata.Metrics) map[string]metricdata.Metrics {
+	out := map[string]metricdata.Metrics{}
+	for _, m := range ms {
+		out[m.Name] = m
+	}
+	return out
 }
 
 func TestFlush_BucketsSealOnWatermark(t *testing.T) {
@@ -66,6 +79,48 @@ func TestFlush_BucketsSealOnWatermark(t *testing.T) {
 	require.Equal(t, int64(2), got[0].Value)
 	require.Equal(t, time.Unix(0, 2*sec), got[0].StartTime)
 	require.Equal(t, time.Unix(0, 3*sec), got[0].Time)
+}
+
+func msgN(topic string, ns int64, size int) tail.Msg {
+	return tail.Msg{Topic: topic, Schema: "S", Time: time.Unix(0, ns), Size: size}
+}
+
+func TestFlush_BytesAndIntervalMetrics(t *testing.T) {
+	a := New(time.Second, 0, nil, nil, nil)
+	// bucket [1,2): 1.0(100B), 1.1(200B), 1.5(300B) -> count 3, bytes 600, gaps 0.1/0.4 -> max 0.4s
+	a.observe(msgN("/t", 1*sec, 100))
+	a.observe(msgN("/t", 1*sec+sec/10, 200))
+	a.observe(msgN("/t", 1*sec+sec/2, 300))
+	// 2.0: gap 0.5s lands in bucket [2,3); also seals [1,2)
+	a.observe(msgN("/t", 2*sec, 50))
+	a.observe(msgN("/t", 3*sec, 0)) // advance watermark to seal [2,3)
+
+	var batch []metricdata.Metrics
+	sink := func(_ context.Context, ms []metricdata.Metrics) error {
+		batch = append(batch, ms...)
+		return nil
+	}
+	require.NoError(t, a.flush(context.Background(), sink, false))
+
+	m := byName(batch)
+	sumByStart := func(name string) map[int64]int64 {
+		out := map[int64]int64{}
+		for _, dp := range m[name].Data.(metricdata.Sum[int64]).DataPoints {
+			out[dp.StartTime.Unix()] = dp.Value
+		}
+		return out
+	}
+	gaugeByStart := func(name string) map[int64]int64 {
+		out := map[int64]int64{}
+		for _, dp := range m[name].Data.(metricdata.Gauge[int64]).DataPoints {
+			out[dp.StartTime.Unix()] = dp.Value
+		}
+		return out
+	}
+
+	require.Equal(t, map[int64]int64{1: 3, 2: 1}, sumByStart(MetricName))
+	require.Equal(t, map[int64]int64{1: 600, 2: 50}, sumByStart(MetricBytes))
+	require.Equal(t, map[int64]int64{1: 4 * sec / 10, 2: 5 * sec / 10}, gaugeByStart(MetricInterval))
 }
 
 func TestFlush_GraceDelaysSealing(t *testing.T) {

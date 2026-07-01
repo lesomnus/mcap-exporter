@@ -86,7 +86,9 @@ func TestPipeline_TailToDeltaExport(t *testing.T) {
 	for _, rm := range fake.rms {
 		for _, sm := range rm.ScopeMetrics {
 			for _, m := range sm.Metrics {
-				require.Equal(t, agg.MetricName, m.Name)
+				if m.Name != agg.MetricName { // bytes/interval asserted elsewhere
+					continue
+				}
 				sum := m.Data.(metricdata.Sum[int64])
 				require.Equal(t, metricdata.DeltaTemporality, sum.Temporality)
 				require.True(t, sum.IsMonotonic)

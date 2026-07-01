@@ -14,8 +14,12 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// MetricName is the single metric emitted; topic and schema are attributes.
-const MetricName = "mcap.topic.message.count"
+// Metric names; topic and schema are attributes on every data point.
+const (
+	MetricName     = "mcap.topic.message.count" // delta Sum: messages per bucket
+	MetricBytes    = "mcap.topic.message.bytes" // delta Sum: payload bytes per bucket
+	MetricInterval = "mcap.topic.interval.max"  // Gauge: max inter-message gap (ns) per bucket
+)
 
 // Sink exports one batch of metrics, typically as a single OTLP request.
 type Sink func(ctx context.Context, ms []metricdata.Metrics) error
@@ -23,7 +27,18 @@ type Sink func(ctx context.Context, ms []metricdata.Metrics) error
 type topicState struct {
 	schema    string
 	watermark int64           // max message time (unix nanos) observed
+	lastTime  int64           // previous message time, for inter-message gaps
 	counts    map[int64]int64 // bucket start (unix nanos) -> message count
+	bytes     map[int64]int64 // bucket start -> total payload bytes
+	maxgap    map[int64]int64 // bucket start -> max inter-message gap (nanos)
+}
+
+func newTopicState() *topicState {
+	return &topicState{
+		counts: map[int64]int64{},
+		bytes:  map[int64]int64{},
+		maxgap: map[int64]int64{},
+	}
 }
 
 // Aggregator buckets messages by message time and emits sealed buckets. It is
@@ -124,7 +139,7 @@ func (a *Aggregator) observe(m tail.Msg) {
 	}
 	st := a.topics[m.Topic]
 	if st == nil {
-		st = &topicState{counts: map[int64]int64{}}
+		st = newTopicState()
 		a.topics[m.Topic] = st
 	}
 	st.schema = m.Schema
@@ -133,6 +148,17 @@ func (a *Aggregator) observe(m tail.Msg) {
 	}
 	b := ts - mod(ts, a.bucket)
 	st.counts[b]++
+	st.bytes[b] += int64(m.Size)
+	// Inter-message gap: attribute the stall to the bucket where it resolved.
+	// Skip out-of-order arrivals (negative gap) and the first message.
+	if st.lastTime > 0 && ts > st.lastTime {
+		if gap := ts - st.lastTime; gap > st.maxgap[b] {
+			st.maxgap[b] = gap
+		}
+	}
+	if ts > st.lastTime {
+		st.lastTime = ts
+	}
 }
 
 // anchor locks the emit floor to (wmax − recent). Idempotent. Before anchoring,
@@ -155,6 +181,8 @@ func (a *Aggregator) prune() {
 		for b := range st.counts {
 			if b+a.bucket <= floor {
 				delete(st.counts, b)
+				delete(st.bytes, b)
+				delete(st.maxgap, b)
 			}
 		}
 	}
@@ -172,7 +200,11 @@ func (a *Aggregator) flush(ctx context.Context, sink Sink, final bool) error {
 		a.anchor() // shutting down before catch-up: lock the floor now and emit
 	}
 
-	dps := []metricdata.DataPoint[int64]{}
+	var (
+		countDPs []metricdata.DataPoint[int64]
+		bytesDPs []metricdata.DataPoint[int64]
+		gapDPs   []metricdata.DataPoint[int64]
+	)
 	for topic, st := range a.topics {
 		sealed := make([]int64, 0, len(st.counts))
 		for b := range st.counts {
@@ -185,40 +217,60 @@ func (a *Aggregator) flush(ctx context.Context, sink Sink, final bool) error {
 		last := a.lastEmitted[topic]
 		for _, b := range sealed {
 			count := st.counts[b]
+			bytes := st.bytes[b]
+			gap := st.maxgap[b]
 			delete(st.counts, b)
+			delete(st.bytes, b)
+			delete(st.maxgap, b)
 
 			end := b + a.bucket
 			if (a.minEmit > 0 && end <= a.minEmit) || b <= last {
 				continue // before the emit floor, or already emitted in a prior run
 			}
-			dps = append(dps, metricdata.DataPoint[int64]{
-				Attributes: attribute.NewSet(
-					attribute.String("topic", topic),
-					attribute.String("schema", st.schema),
-				),
-				StartTime: time.Unix(0, b),
-				Time:      time.Unix(0, end),
-				Value:     count,
-			})
+			attrs := attribute.NewSet(
+				attribute.String("topic", topic),
+				attribute.String("schema", st.schema),
+			)
+			point := func(v int64) metricdata.DataPoint[int64] {
+				return metricdata.DataPoint[int64]{
+					Attributes: attrs,
+					StartTime:  time.Unix(0, b),
+					Time:       time.Unix(0, end),
+					Value:      v,
+				}
+			}
+			countDPs = append(countDPs, point(count))
+			bytesDPs = append(bytesDPs, point(bytes))
+			gapDPs = append(gapDPs, point(gap))
 			last = b
 		}
 		a.lastEmitted[topic] = last
 	}
 
-	if len(dps) == 0 {
+	if len(countDPs) == 0 {
 		return nil
 	}
 
-	err := sink(ctx, []metricdata.Metrics{{
-		Name:        MetricName,
-		Description: "Number of ROS2 messages observed on a topic within a message-time bucket.",
-		Unit:        "1",
-		Data: metricdata.Sum[int64]{
-			Temporality: metricdata.DeltaTemporality,
-			IsMonotonic: true,
-			DataPoints:  dps,
+	err := sink(ctx, []metricdata.Metrics{
+		{
+			Name:        MetricName,
+			Description: "Number of ROS2 messages observed on a topic within a message-time bucket.",
+			Unit:        "1",
+			Data:        metricdata.Sum[int64]{Temporality: metricdata.DeltaTemporality, IsMonotonic: true, DataPoints: countDPs},
 		},
-	}})
+		{
+			Name:        MetricBytes,
+			Description: "Total serialized payload bytes observed on a topic within a message-time bucket.",
+			Unit:        "By",
+			Data:        metricdata.Sum[int64]{Temporality: metricdata.DeltaTemporality, IsMonotonic: true, DataPoints: bytesDPs},
+		},
+		{
+			Name:        MetricInterval,
+			Description: "Largest gap between consecutive messages on a topic within a message-time bucket.",
+			Unit:        "ns",
+			Data:        metricdata.Gauge[int64]{DataPoints: gapDPs},
+		},
+	})
 	if err != nil {
 		return err
 	}

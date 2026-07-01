@@ -14,13 +14,18 @@ metric, stamped with the **recorded message time** rather than wall-clock time.
 - **Bucket**: messages are counted into fixed message-time buckets (`bucket`,
   default `1s`) per topic. A bucket is emitted once the topic's latest message
   time has passed the bucket end plus `grace`.
-- **Export**: each sealed bucket becomes one **delta**, monotonic `Sum` data
-  point — `mcap.topic.message.count` with `topic`/`schema` attributes and the
-  bucket's `[start, end)` message-time window. Points are pushed directly
-  through the configured exporter's `Export` (bypassing the SDK's
-  collection-time stamping), so the timestamps are the recording's own.
+- **Export**: each sealed bucket is pushed (with `topic`/`schema` attributes and
+  the bucket's `[start, end)` message-time window) directly through the
+  configured exporter's `Export`, bypassing the SDK's collection-time stamping
+  so the timestamps are the recording's own.
 
-`Hz = count / bucket`, computed downstream. The metric carries no file name.
+The metrics carry no file name. Per `(topic, bucket)`:
+
+| Metric | Type | Reveals |
+|---|---|---|
+| `mcap.topic.message.count` | delta `Sum` | rate — `Hz = count / bucket` |
+| `mcap.topic.message.bytes` | delta `Sum` (`By`) | bandwidth — `B/s = bytes / bucket` |
+| `mcap.topic.interval.max` | `Gauge` (`ns`) | largest gap between consecutive messages — catches a stall a Hz average hides |
 
 ## Quick start
 
@@ -80,6 +85,10 @@ WHERE MetricName = 'mcap.topic.message.count' AND AggregationTemporality = 1
 GROUP BY topic, TimeUnix, StartTimeUnix
 ORDER BY topic, TimeUnix;
 ```
+
+`mcap.topic.message.bytes` is the same `otel_metrics_sum` query (`bytes / window`
+= bandwidth). `mcap.topic.interval.max` is a gauge in `otel_metrics_gauge`; read
+its `Value` directly (e.g. alert on `max(Value) > 5e8` for a >0.5 s stall).
 
 ## Recent window
 

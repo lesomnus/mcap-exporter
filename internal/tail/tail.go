@@ -23,6 +23,7 @@ type Msg struct {
 	Topic  string
 	Schema string
 	Time   time.Time
+	Size   int // serialized payload length, for the byte-rate metric
 }
 
 type chanInfo struct {
@@ -103,6 +104,7 @@ func TailOne(ctx context.Context, path string, idle func(), headers map[string]b
 				Topic:  ci.topic,
 				Schema: schemas[ci.schemaID],
 				Time:   resolveTime(headers[ci.topic], m),
+				Size:   len(m.Data),
 			}
 			select {
 			case out <- msg:
